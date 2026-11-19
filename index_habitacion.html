@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Habitación · modo día y noche</title>
+<style>
+  :root {
+    --bg: #e9eef2; --panel: #ffffff; --ink: #14232e; --muted: #5d6f7b; --line: #d3dce3;
+    --dia: #f2b134; --noche: #3b4a9c; --led: #ffd24a; --ledoff: #cfd8de; --ok: #0a8f6a; --mal: #c2410c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1b24; --panel: #17262f; --ink: #e8eff3; --muted: #93a6b2; --line: #2a3d49;
+            --dia: #f2b134; --noche: #8b9bff; --led: #ffd24a; --ledoff: #2c3f4b; --ok: #35d3a1; --mal: #fb923c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 1rem;
+         background: var(--bg); color: var(--ink); font-family: "Segoe UI", system-ui, sans-serif; }
+  main { width: min(30rem, 100%); background: var(--panel); border-radius: 1.25rem; padding: 1.75rem; }
+  h1 { margin: 0 0 1.25rem; font-size: 1.35rem; }
+  .conexion { display: flex; align-items: center; gap: .55rem; font-size: .9rem; color: var(--muted); margin-bottom: .4rem; }
+  .punto { width: .65rem; height: .65rem; border-radius: 50%; background: var(--ledoff); flex: none; }
+  .punto.ok { background: var(--ok); } .punto.mal { background: var(--mal); }
+
+  .modo { margin: 1.5rem 0; padding: 1.5rem; border-radius: 1rem; background: var(--line); transition: background .3s; }
+  .modo.dia { background: var(--dia); color: #3a2800; }
+  .modo.noche { background: var(--noche); color: #fff; }
+  .modo b { display: block; font-size: 1.8rem; }
+  .modo span { font-size: .95rem; opacity: .9; }
+
+  .leds { display: grid; grid-template-columns: repeat(8, 1fr); gap: .5rem; margin-bottom: .75rem; }
+  .led { aspect-ratio: 1; border-radius: 50%; background: var(--ledoff); transition: background .2s, box-shadow .2s; }
+  .led.on { background: var(--led); box-shadow: 0 0 .8rem var(--led); }
+  .fila { display: flex; justify-content: space-between; font-size: .95rem; padding: .6rem 0; border-top: 1px solid var(--line); }
+  .fila span:first-child { color: var(--muted); }
+  small { display: block; margin-top: 1rem; color: var(--muted); line-height: 1.5; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Habitación</h1>
+  <div class="conexion"><span id="p-web" class="punto"></span><span id="t-web">Conectando al servidor…</span></div>
+  <div class="conexion"><span id="p-esp" class="punto"></span><span id="t-esp">ESP32 sin conexión</span></div>
+
+  <div id="modo" class="modo"><b id="modo-titulo">Sin datos</b><span id="modo-msg">Esperando al ESP32…</span></div>
+
+  <div class="leds" id="leds"></div>
+  <div class="fila"><span>LEDs</span><span id="v-leds">–</span></div>
+  <div class="fila"><span>Tiempo hasta apagar LEDs</span><span id="v-rest">–</span></div>
+  <div class="fila"><span>Luz (LDR, 0 a 4095)</span><span id="v-ldr">–</span></div>
+  <small>Esta página solo muestra el estado; la habitación se regula sola con el sensor de luz.</small>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+  // ⚠️ Mismo valor que BASE en el sketch del ESP32
+  const BASE = "mi-esp32-ab12cd34";
+  const $ = id => document.getElementById(id);
+
+  const ledsBox = $("leds");
+  for (let i = 0; i < 8; i++) { const d = document.createElement("div"); d.className = "led"; ledsBox.appendChild(d); }
+
+  function pintar(d) {
+    const noche = d.modo === "noche";
+    $("modo").className = "modo " + (noche ? "noche" : "dia");
+    $("modo-titulo").textContent = noche ? "Modo noche" : "Modo día";
+    $("modo-msg").textContent = noche ? "Hora de dormir" : "Compu encendida";
+    [...ledsBox.children].forEach(l => l.classList.toggle("on", d.leds));
+    $("v-leds").textContent = d.leds ? "Encendidos" : "Apagados";
+    $("v-rest").textContent = d.leds ? Math.floor(d.restante / 60) + ":" + String(d.restante % 60).padStart(2, "0") : "–";
+    $("v-ldr").textContent = d.ldr;
+  }
+
+  const client = mqtt.connect("wss://broker.hivemq.com:8884/mqtt", {
+    clientId: "web-" + Math.random().toString(16).slice(2, 10), reconnectPeriod: 3000
+  });
+  client.on("connect", () => {
+    $("p-web").className = "punto ok"; $("t-web").textContent = "Conectado al servidor";
+    client.subscribe([BASE + "/estado", BASE + "/status"]);
+  });
+  client.on("reconnect", () => { $("p-web").className = "punto"; $("t-web").textContent = "Reconectando…"; });
+  client.on("error", () => { $("p-web").className = "punto mal"; $("t-web").textContent = "Error de conexión"; });
+
+  client.on("message", (topic, payload) => {
+    const msg = payload.toString();
+    if (topic === BASE + "/status") {
+      const on = msg === "online";
+      $("p-esp").className = "punto " + (on ? "ok" : "mal");
+      $("t-esp").textContent = on ? "ESP32 en línea" : "ESP32 sin conexión";
+    } else if (topic === BASE + "/estado") {
+      try { pintar(JSON.parse(msg)); } catch (e) {}
+    }
+  });
+</script>
+</body>
+</html>
